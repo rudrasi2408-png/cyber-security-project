@@ -5,7 +5,6 @@
 import threading
 import tkinter as tk
 from tkinter import scrolledtext, ttk
-import dns.resolver
 
 AUTHOR = "RUDRA SINGH"
 TYPES = ["A", "AAAA", "MX", "NS", "TXT", "CNAME", "SOA"]
