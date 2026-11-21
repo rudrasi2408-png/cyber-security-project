@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DNS Lookup – GUI and CLI</title>
+<style>
+:root{--bg:#eef1f5;--panel:#fff;--ink:#1b2430;--muted:#5d6b7c;--line:#d5dce5;--accent:#1f5eff;--accent-ink:#fff;--term:#12202f;--term-ink:#d6e4f2;--term-dim:#7f93a8;--ok:#7fe0a8;--err:#ff8f8f;--warn:#ffd479}
+@media (prefers-color-scheme:dark){:root{--bg:#0e141b;--panel:#17202b;--ink:#e6edf5;--muted:#90a0b3;--line:#2a3745;--accent:#5b8cff;--accent-ink:#0b1220;--term:#0a1118}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:16px/1.5 "Segoe UI",system-ui,sans-serif;padding:24px}
+h1{font-size:1.5rem;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 20px}
+.grid{display:grid;grid-template-columns:minmax(300px,420px) 1fr;gap:20px;max-width:1200px;margin:0 auto}
+@media(max-width:860px){.grid{grid-template-columns:1fr}}
+header{max-width:1200px;margin:0 auto}
+section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px}
+h2{font-size:1.05rem;margin:0 0 12px}
+label{display:block;font-size:.9rem;color:var(--muted);margin:12px 0 4px}
+input,select{width:100%;padding:10px 12px;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px}
+input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.row{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap}
+button{font:inherit;padding:10px 16px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+button:disabled{opacity:.6;cursor:wait}
+#status{margin-top:14px;color:var(--muted);font-size:.9rem;min-height:1.3em}
+.tablewrap{overflow-x:auto;margin-top:8px}
+table{border-collapse:collapse;width:100%;font-size:.92rem}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+td.data{font-family:Consolas,Menlo,monospace;word-break:break-all}
+.right{display:flex;flex-direction:column;gap:20px;min-width:0}
+#term{background:var(--term);color:var(--term-ink);border-radius:10px;padding:14px;font:14px/1.5 Consolas,Menlo,monospace;height:360px;overflow-y:auto;border:1px solid var(--line)}
+#term .out{white-space:pre-wrap;word-break:break-word}
+.dim{color:var(--term-dim)}.ok{color:var(--ok)}.err{color:var(--err)}.warn{color:var(--warn)}
+.prompt{display:flex;gap:8px;margin-top:4px}
+.prompt span{color:var(--ok);white-space:nowrap}
+#cmd{background:transparent;border:0;color:var(--term-ink);padding:0;font:inherit;outline:none;flex:1;min-width:0}
+.empty{color:var(--muted);padding:8px 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>DNS Lookup</h1>
+  <p class="sub">Use the form, or type commands in the terminal. Both run the same queries.</p>
+</header>
+
+<div class="grid">
+  <section aria-labelledby="gui-h">
+    <h2 id="gui-h">Lookup form</h2>
+    <form id="form" autocomplete="off">
+      <label for="domain">Domain or IP address</label>
+      <input id="domain" placeholder="example.com" required>
+      <label for="type">Record type</label>
+      <select id="type">
+        <option>A</option><option>AAAA</option><option>MX</option><option>TXT</option>
+        <option>NS</option><option>CNAME</option><option>SOA</option><option>CAA</option>
+        <option>SRV</option><option>PTR</option>
+      </select>
+      <label for="resolver">Resolver</label>
+      <select id="resolver">
+        <option value="cloudflare">Cloudflare (1.1.1.1)</option>
+        <option value="google">Google (8.8.8.8)</option>
+      </select>
+      <div class="row">
+        <button class="primary" id="go" type="submit">Look up</button>
+        <button type="button" id="all">Look up all common types</button>
+      </div>
+    </form>
+    <div id="status" role="status"></div>
+  </section>
+
+  <div class="right">
+    <section aria-labelledby="res-h">
+      <h2 id="res-h">Results</h2>
+      <div class="tablewrap">
+        <table id="results" hidden>
+          <thead><tr><th>Name</th><th>Type</th><th>TTL</th><th>Data</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="empty" id="empty">No results yet. Run a lookup to see records here.</div>
+    </section>
+
+    <section aria-labelledby="cli-h">
+      <h2 id="cli-h">Terminal</h2>
+      <div id="term" aria-live="polite">
+        <div id="log"></div>
+        <div class="prompt"><span>dns&gt;</span><input id="cmd" aria-label="Command" spellcheck="false" autocapitalize="off"></div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+(function () {
+  var TYPES = {A:1,NS:2,CNAME:5,SOA:6,PTR:12,MX:15,TXT:16,AAAA:28,SRV:33,CAA:257};
+  var NUM2TYPE = {}; Object.keys(TYPES).forEach(function (k) { NUM2TYPE[TYPES[k]] = k; });
+  var RCODES = ['NOERROR','FORMERR','SERVFAIL','NXDOMAIN','NOTIMP','REFUSED'];
+  var RESOLVERS = {
+    cloudflare: {name: 'Cloudflare 1.1.1.1', url: 'https://cloudflare-dns.com/dns-query'},
+    google: {name: 'Google 8.8.8.8', url: 'https://dns.google/resolve'}
+  };
+  var $ = function (id) { return document.getElementById(id); };
+  var log = $('log'), term = $('term'), cmd = $('cmd');
+  var history = [], hIndex = 0;
+
+  /* ---------- core query ---------- */
+  function normalize(input, type) {
+    input = input.trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/\.$/, '');
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(input)) {
+      return {name: input.split('.').reverse().join('.') + '.in-addr.arpa', type: 'PTR'};
+    }
+    return {name: input, type: type};
+  }
+
+  async function query(input, type, resolverKey) {
+    var q = normalize(input, type);
+    var r = RESOLVERS[resolverKey];
+    var url = r.url + '?name=' + encodeURIComponent(q.name) + '&type=' + q.type;
+    var t0 = performance.now();
+    var res = await fetch(url, {headers: {accept: 'application/dns-json'}});
+    if (!res.ok) throw new Error('Resolver returned HTTP ' + res.status);
+    var json = await res.json();
+    return {q: q, resolver: r.name, ms: Math.round(performance.now() - t0), json: json};
+  }
+
+  function records(result) {
+    return (result.json.Answer || []).map(function (a) {
+      return {name: a.name, type: NUM2TYPE[a.type] || String(a.type), ttl: a.TTL, data: a.data};
+    });
+  }
+  function rcode(result) { return RCODES[result.json.Status] || ('RCODE ' + result.json.Status); }
+
+  /* ---------- terminal output ---------- */
+  function print(text, cls) {
+    var d = document.createElement('div');
+    d.className = 'out ' + (cls || '');
+    d.textContent = text;
+    log.appendChild(d);
+    term.scrollTop = term.scrollHeight;
+  }
+  function pad(s, n) { s = String(s); while (s.length < n) s += ' '; return s; }
+
+  function printDig(result) {
+    var recs = records(result);
+    print('; <<>> dns-lookup <<>> ' + result.q.name + ' ' + result.q.type, 'dim');
+    print(';; server: ' + result.resolver + '   status: ' + rcode(result) + '   answers: ' + recs.length, 'dim');
+    if (recs.length) {
+      print(recs.map(function (r) {
+        return pad(r.name, 30) + pad(r.ttl, 8) + pad(r.type, 7) + r.data;
+      }).join('\n'));
+    } else {
+      print('No answer records.', 'warn');
+    }
+    print(';; query time: ' + result.ms + ' ms', 'dim');
+  }
+
+  function printNslookup(result) {
+    var recs = records(result);
+    print('Server:   ' + result.resolver, 'dim');
+    print('Status:   ' + rcode(result), 'dim');
+    if (!recs.length) { print('*** No ' + result.q.type + ' records found for ' + result.q.name, 'warn'); return; }
+    print(recs.map(function (r) { return r.name + '  ' + r.type + '  ttl=' + r.ttl + '  ' + r.data; }).join('\n'));
+  }
+
+  /* ---------- GUI output ---------- */
+  function showTable(recs) {
+    var body = document.querySelector('#results tbody');
+    body.textContent = '';
+    recs.forEach(function (r) {
+      var tr = document.createElement('tr');
+      [r.name, r.type, r.ttl, r.data].forEach(function (v, i) {
+        var td = document.createElement('td');
+        if (i === 3) td.className = 'data';
+        td.textContent = v;
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+    $('results').hidden = !recs.length;
+    $('empty').hidden = !!recs.length;
+    if (!recs.length) $('empty').textContent = 'No matching records were returned for this lookup.';
+  }
+
+  function setStatus(msg) { $('status').textContent = msg; }
+
+  /* ---------- actions ---------- */
+  async function runLookup(domain, type, resolverKey, style) {
+    try {
+      var result = await query(domain, type, resolverKey);
+      (style === 'nslookup' ? printNslookup : printDig)(result);
+      return result;
+    } catch (e) {
+      print('Lookup failed: ' + e.message + '. Check your connection and that the page is not blocked from reaching the resolver.', 'err');
+      throw e;
+    }
+  }
+
+  async function runAll(domain, resolverKey, style) {
+    var list = ['A','AAAA','MX','NS','TXT','SOA','CAA'], all = [];
+    for (var i = 0; i < list.length; i++) {
+      try {
+        var res = await runLookup(domain, list[i], resolverKey, style);
+        all = all.concat(records(res));
+      } catch (e) { break; }
+    }
+    return all;
+  }
+
+  /* ---------- GUI handlers ---------- */
+  $('form').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var btn = $('go'); btn.disabled = true; setStatus('Looking up…');
+    var domain = $('domain').value, type = $('type').value, rk = $('resolver').value;
+    print('dns> dig ' + domain + ' ' + type + '   (from form)', 'dim');
+    try {
+      var res = await runLookup(domain, type, rk, 'dig');
+      var recs = records(res); showTable(recs);
+      setStatus(rcode(res) + ' · ' + recs.length + ' record(s) · ' + res.ms + ' ms via ' + res.resolver);
+    } catch (err) { setStatus('Lookup failed: ' + err.message); }
+    btn.disabled = false;
+  });
+
+  $('all').addEventListener('click', async function () {
+    var domain = $('domain').value.trim();
+    if (!domain) { setStatus('Enter a domain first.'); $('domain').focus(); return; }
+    var btn = $('all'); btn.disabled = true; setStatus('Looking up all common types…');
+    print('dns> all ' + domain + '   (from form)', 'dim');
+    var recs = await runAll(domain, $('resolver').value, 'dig');
+    showTable(recs);
+    setStatus(recs.length + ' record(s) found across common types.');
+    btn.disabled = false;
+  });
+
+  /* ---------- CLI ---------- */
+  var HELP = [
+    'Commands:',
+    '  dig <domain> [type]        full-format answer (default type A)',
+    '  nslookup <domain> [type]   short-format answer',
+    '  all <domain>               query A, AAAA, MX, NS, TXT, SOA, CAA',
+    '  resolver [cloudflare|google]   show or change the resolver',
+    '  types                      list supported record types',
+    '  history                    show previous commands',
+    '  clear                      clear the terminal',
+    '  help                       show this message',
+    '',
+    'Tip: passing an IPv4 address runs a reverse (PTR) lookup. Use the up/down arrows for history.'
+  ].join('\n');
+
+  async function exec(line) {
+    var parts = line.trim().split(/\s+/), c = (parts[0] || '').toLowerCase();
+    if (!c) return;
+    print('dns> ' + line, 'dim');
+    history.push(line); hIndex = history.length;
+    var rk = $('resolver').value;
+
+    if (c === 'help') return print(HELP);
+    if (c === 'clear') { log.textContent = ''; return; }
+    if (c === 'types') return print(Object.keys(TYPES).join('  '));
+    if (c === 'history') return print(history.map(function (h, i) { return (i + 1) + '  ' + h; }).join('\n'));
+    if (c === 'resolver') {
+      if (!parts[1]) return print('Current resolver: ' + RESOLVERS[rk].name);
+      var k = parts[1].toLowerCase();
+      if (!RESOLVERS[k]) return print('Unknown resolver. Use cloudflare or google.', 'err');
+      $('resolver').value = k; return print('Resolver set to ' + RESOLVERS[k].name, 'ok');
+    }
+    if (c === 'dig' || c === 'nslookup' || c === 'lookup') {
+      var domain = parts[1];
+      if (!domain) return print('Usage: ' + c + ' <domain> [type]', 'err');
+      var type = (parts[2] || 'A').toUpperCase();
+      if (!TYPES[type]) return print('Unknown record type "' + type + '". Type "types" to see supported ones.', 'err');
+      $('domain').value = domain; $('type').value = type;
+      try {
+        var res = await runLookup(domain, type, rk, c === 'nslookup' ? 'nslookup' : 'dig');
+        showTable(records(res));
+        setStatus(rcode(res) + ' · ' + records(res).length + ' record(s) · ' + res.ms + ' ms via ' + res.resolver);
+      } catch (e) {}
+      return;
+    }
+    if (c === 'all') {
+      if (!parts[1]) return print('Usage: all <domain>', 'err');
+      $('domain').value = parts[1];
+      showTable(await runAll(parts[1], rk, 'dig'));
+      return;
+    }
+    print('Command not found: ' + c + '. Type "help" to see what is available.', 'err');
+  }
+
+  cmd.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { var v = cmd.value; cmd.value = ''; exec(v); }
+    else if (e.key === 'ArrowUp') { if (hIndex > 0) cmd.value = history[--hIndex]; e.preventDefault(); }
+    else if (e.key === 'ArrowDown') { cmd.value = hIndex < history.length - 1 ? history[++hIndex] : (hIndex = history.length, ''); e.preventDefault(); }
+  });
+  term.addEventListener('click', function () { cmd.focus(); });
+
+  print('DNS lookup terminal. Type "help" for commands, for example: dig example.com MX', 'ok');
+})();
+</script>
+</body>
